@@ -6,6 +6,8 @@
  * Includes three.js r58 | Copyright (c) 2010-2013 three.js authors
  * Includes jsTGALoader v1.2.0 | Copyright (c) 2013 Vincent Thibault
  * Includes html2canvas 0.4.1 | Copyright (c) 2013 Niklas von Hertzen
+ * Includes snd.js v0.9 | Copyright (c) 2014 N_H <h.10x64@gmail.com>
+ * Includes snd.three.js v0.1 | Copyright (c) 2014 N_H <h.10x64@gmail.com>
  *
  * The MIT License
  *
@@ -29,7 +31,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  *
- * Date: 2014-10-16
+ * Date: 2014-12-07
  */
 
 var THREE = { REVISION: '58' };
@@ -37,7 +39,7 @@ var THREE = { REVISION: '58' };
 // http://paulirish.com/2011/requestanimationframe-for-smart-animating/
 // http://my.opera.com/emoller/blog/2011/12/20/requestanimationframe-for-smart-er-animating
 
-// requestAnimationFrame polyfill by Erik Mﾃｶller
+// requestAnimationFrame polyfill by Erik Möller
 // fixes from Paul Irish and Tino Zijdel
 
 ( function () {
@@ -30598,6 +30600,38 @@ THREE.ShaderSprite = {
 
 };
 
+/**
+ * @author sroucheray / http://sroucheray.org/
+ * @author mrdoob / http://mrdoob.com/
+ */
+
+THREE.AxisHelper = function ( size ) {
+
+	size = size || 1;
+
+	var geometry = new THREE.Geometry();
+
+	geometry.vertices.push(
+		new THREE.Vector3(), new THREE.Vector3( size, 0, 0 ),
+		new THREE.Vector3(), new THREE.Vector3( 0, size, 0 ),
+		new THREE.Vector3(), new THREE.Vector3( 0, 0, size )
+	);
+
+	geometry.colors.push(
+		new THREE.Color( 0xff0000 ), new THREE.Color( 0xffaa00 ),
+		new THREE.Color( 0x00ff00 ), new THREE.Color( 0xaaff00 ),
+		new THREE.Color( 0x0000ff ), new THREE.Color( 0x00aaff )
+	);
+
+	var material = new THREE.LineBasicMaterial( { vertexColors: THREE.VertexColors } );
+
+	THREE.Line.call( this, geometry, material, THREE.LinePieces );
+
+};
+
+THREE.AxisHelper.prototype = Object.create( THREE.Line.prototype );
+
+
 // jsTGALoader
 //rewrite by jThree prototype.open xhr.open->xhr.responseType, add error
 (function(exports) {
@@ -33993,7 +34027,1085 @@ _html2canvas.Renderer.Canvas = function(options) {
     return canvas;
   };
 };
-})(window,document);
+})(window,document);( function() {
+
+/**
+ * snd.jsの基幹ネームスペースです。
+ * @property {String} VERSION バージョン番号です。
+ * @property {Boolean} IS_BETA ベータ版かどうかを表すブール値です。
+ * @property {String} status.NONE 音源が未設定などの理由で、ステータスがまだ定まっていないことを表す値です。
+ * @property {String} status.READY 音源の読込が終了するなどして、音源の再生が可能な状態になっていることを表す値です。
+ * @property {String} status.STARTED 音源の再生が開始され、再生中であることを表す値です。
+ * @property {String} status.PAUSED 音源の再生が中断し、停止中であることを表す値です。
+ * @property {String} status.STOPPED 音源の再生が終了し、停止したことを表す値です。
+ * @property {AudioContext} AUDIO_CONTEXT ブラウザから取得したオーディオコンテキストが入ります。<br/>
+ * ※snd.initメソッドが呼ばれるまで初期化されず、nullとなっている点に注意してください。
+ * @property {snd.AudioMaster} AUDIO_MASTER  snd.jsのPAミキサーです。<br/>
+ * ※snd.initメソッドが呼ばれるまで初期化されず、nullとなっている点に注意してください。
+ * @property {snd.AudioDataManager} AUDIO_DATA_MANAGER 音データの読み込みなどの管理を行うクラスです。<br/>
+ * ※snd.initメソッドが呼ばれるまで初期化されず、nullとなっている点に注意してください。
+ */
+var snd = {VERSION: "0.9_20141123", IS_BETA:true, ALIAS: "WIP_MinorSnow"};
+
+
+
+/**
+ * 新しいオーディオユニットを生成します。
+ * @class 1つのオーディオユニットを定義する抽象クラスです。<br/>
+ * 引数にAudioUnitを要求するメソッドに渡すオブジェクトは、ここで定義されている各メソッドを実装している必要があります。<br/>
+ * パラメータ "_status" はオーディオユニットのパラメータをまとめたオブジェクトで、JSONを使って保存・読み込みする際に使用されます。<br/>
+ * _status内の値はプロパティから取得できるようになっているので、直接_statusを使用しないようにしてください。
+ * @param id このオーディオユニットのID
+ */
+snd.AudioUnit = function(id) {
+    this._status = this.createStatus();
+    
+    this._status.id = id;
+    
+    Object.defineProperties(this, {
+        isAudioUnit: {
+            enumerable: true,
+            get: function() {
+                return this._status.isAudioUnit;
+            }
+        },
+        id : {
+            enumerable: true,
+            get: function() {
+                return this._status.id;
+            }
+        },
+        connection : {
+            enumerable: true,
+            get: function() {
+                var ret = Object.create(this._status.connection);
+                return ret;
+            }
+        }
+    });
+};
+
+/**
+ * デフォルトの設定値(_status変数の値)を作るメソッドです。<br/>
+ * snd.AudioUnit を継承するクラスはこのメソッドをオーバーライドしてください。<br/>
+ * 戻り値は、snd.AudioUnit.Status を継承したクラスである必要があります。<br/>
+ * @returns {snd.AudioUnit.Status} このクラスのデフォルト設定値
+ */
+snd.AudioUnit.prototype.createStatus = function() {
+    // PLEASE OVERRIDE ME
+    return new snd.AudioUnit.Status();
+};
+
+/**
+ * このオーディオユニットをconnectToで指定されたオーディオユニットまたはノードに接続します。<br/>
+ * <div>
+ * このオーディオユニットが出力側となり、connectToで渡される接続先は入力側になります。<br/>
+ * 出入力が複数ある場合、任意の出力を任意の入力に接続したい場合は、indexOut, indexIn で出入力の番号を指定します。<br/>
+ * indexOut, indexInが両方とも指定されなかった場合は、メソッドを呼び出したオブジェクトの0番の出力を connectTo で渡されたオブジェクトの0番の入力に接続します。<br/>
+ * ※indexOut, indexIn の番号の意味はオーディオユニットにより異なります。<br/>
+ * </div>
+ * <div>
+ * このメソッドを使って connectTo に接続した時に connection プロパティに connectTo.id が追加されます。<br/>
+ * 引数 connectTo が id を持たない場合（connectTo.id == nullの場合）、connection プロパティには引数 id の値が追加されますので、 gain や frequency など、id を持たないパラメータへ接続する時は、引数 id に値を設定するようにしてください。<br/>
+ * connectTo.id, id が両方とも null の場合は connection プロパティには何も追加されません。<br/>
+ * connection プロパティに追加される文字列は以下の書式にしたがいます。<br/>
+ * <strong>"ID_String[INDEX_OUT:INDEX_IN]"</strong>
+ * </div>
+ * <div>
+ * このクラスを継承するクラスを作る場合、オーバーライドが必要です。(オーバーライドの際、apply必須)
+ * </div>
+ * @param {snd.AudioUnit} connectTo 接続するAudioUnit
+ * @param {Number} indexOut 接続する出力側のアウトプットのインデックス
+ * @param {Number} indexIn 接続する入力側のインプットのインデックス
+ * @param {String} id connectTo.idがnullの場合に使用されるID
+ */
+snd.AudioUnit.prototype.connect = function(connectTo, indexOut, indexIn, id) {
+    if (connectTo.id != null || id != null) {
+        var str = null;
+        if (connectTo.id != null) {
+            str = connectTo.id;
+        } else if (id != null) {
+            str = id;
+        }
+        
+        str += "[" + ((indexOut != null) ? indexOut : "0") + ":" + ((indexIn != null) ? indexIn : "0") + "]";
+        
+        this._status.connection.push(str);
+    }
+    
+    // PLEASE OVERRIDE ME LIKE THIS
+    // SubClass.prototype.connect = function(connectTo, bra, bra) {
+    //     AudioUnit.prototype.connect.apply(this, arguments);
+    // };
+};
+
+/**
+ * このオーディオユニットをdisconnectFromから切断します。<br/>
+ * このメソッドを使って disconnectFrom との接続を切断した時、connection プロパティから disconnectFrom.id が削除されます。<br/>
+ * 引数 disconnectFrom が id を持たない場合（disconnectFrom.id == nullの場合）、引数 id に設定された値が connection プロパティから削除されます。<br/>
+ * connectTo.id, id が両方とも null の場合は connection プロパティからは何も削除されません。<br/>
+ * このクラスを継承するクラスを作る場合、オーバーライドが必要です。(オーバーライドの際、apply必須)
+ * @param {snd.AudioUnit} disconnectFrom 切断するAudioUnit
+ * @param {Number} indexOut 切断するAudioUnitの出力
+ * @param {String} id disconnectFrom.id が null の場合に使用されるID
+ */
+snd.AudioUnit.prototype.disconnect = function(disconnectFrom, indexOut, id) {
+    if (disconnectFrom.id != null || id != null) {
+        var idx = -1;
+        var str = "";
+        
+        if (disconnectFrom.id != null) {
+            str = disconnectFrom.id;
+        } else if (id != null) {
+            str = id;
+        }
+        
+        str += "[" + ((indexOut != null) ? indexOut : "0");
+        for (var i = 0; i < this._status.connection.length; i++) {
+            if (this._status.connection[i].substring(0, str.length) === str) {
+                idx = i;
+                break;
+            }
+        }
+        
+        if (idx >= 0) {
+            this._status.connection.splice(idx, 1);
+        }
+    }
+    
+    // PLEASE OVERRIDE ME LIKE THIS
+    // SubClass.prototype.connect = function(connectTo, bra, bra) {
+    //     AudioUnit.prototype.disconnect.apply(this, arguments);
+    // };
+};
+
+
+/**
+ * オーディオユニットの各種設定情報を保持するクラスです。
+ * @property {String} className このステータスを持つオブジェクトのクラス名
+ * @property {Boolean} isAudioUnit このステータスを持つオブジェクトがsnd.AudioUnitクラスのメソッドを実装していることを表すブール値
+ * @property {String} id このステータスを持つオブジェクトのID
+ * @property {Array} connection このステータスを持つオブジェクトが接続しているオブジェクトのIDを格納する配列
+ */
+snd.AudioUnit.Status = function() {
+    this.className = "snd.AudioUnit";
+    this.isAudioUnit = true;
+    this.id = "";
+    this.connection = [];
+    
+    this.channelCount = 2;
+    this.channelCountMode = "max";
+    this.channelInterpretation = "discrete";
+};
+
+
+/**
+ * 音源を生成します。<br/>
+ * statusプロパティはsnd.status.NONEに<br/>
+ * それぞれ設定されます。
+ * @class 各種音源クラスの親クラスとなる抽象クラスです。<br/>
+ * start, stopなどの抽象メソッドは継承する子クラスで実装してください。
+ * @property {Boolean} isSource このオブジェクトがsnd.Sourceであることを表すプロパティです。
+ * @property {AudioParam} volumeParam この音源の音量を設定するためのAudioParamです。他のAudioUnitの出力をこのOscillatorの周波数の値に渡す場合などに使用するためのもので、このプロパティに直接値を代入することはできません。<br/>
+ * この音源の音量に具体的な数値を設定したい場合は、volumeプロパティを使用してください。
+ * @property {Number} volume この音源の音量を取得・設定するプロパティです。<br/>
+ * 単位は[倍]です。（デシベルではありません）<br/>
+ * @property {String} type この音源のクラス名です。<br/>
+ * 値を設定することはできません。
+ * @property {snd.status} status この音源の状態を表すプロパティです。<br/>
+ * 値を設定することはできません。
+ * @param {String} id この音源のID
+ */
+snd.Source = function(id) {
+    snd.AudioUnit.apply(this, arguments);
+    
+    this._gain = snd.AUDIO_CONTEXT.createGain();
+    
+    Object.defineProperties(this, {
+        isSource: {
+            get: function() {
+                return this._status.isSource;
+            }
+        },
+        volumeParam: {
+            get: function() {
+                var ret = this.gain.gain;
+                if (ret.id == null) {
+                    ret.id = this.id + ".gain";
+                }
+                return ret;
+            }
+        },
+        volume: {
+            get: function() {
+                return this._gain.gain.value;
+            },
+            set: function(val) {
+                this._gain.gain.value = val;
+                this._status.volume = val;
+            }
+        },
+        status: {
+            get: function() {
+                return this._status.status;
+            }
+        }
+    });
+};
+snd.Source.prototype = Object.create(snd.AudioUnit.prototype);
+snd.Source.prototype.constructor = snd.Source;
+
+snd.Source.CLASS_NAME = "snd.Source";
+
+
+
+/**
+ * 詳細はAudioUnitクラスのconnectを参照してください。
+ * @param {AudioUnit} connectTo 接続先
+ */
+snd.Source.prototype.connect = function(connectTo, indexIn, indexOut, id) {
+    snd.AudioUnit.prototype.connect.apply(this, arguments);
+    
+    if (connectTo.isAudioUnit || connectTo.getConnector != null) {
+        this._gain.connect(connectTo.getConnector(), indexIn, indexOut);
+    } else {
+        this._gain.connect(connectTo, indexIn, indexOut);
+    }
+};
+
+/**
+ * 詳細はAudioUnitクラスのdisconnectFromを参照してください。
+ * @param {AudioUnit} disconnectFrom 切断する接続先
+ */
+snd.Source.prototype.disconnect = function(disconnectFrom, id) {
+    snd.AudioUnit.prototype.disconnect.apply(this, arguments);
+    
+    if (disconnectFrom.isAudioUnit || disconnectFrom.getConnector != null) {
+        this._gain.disconnect(disconnectFrom.getConnector());
+    } else {
+        this._gain.disconnect(disconnectFrom);
+    }
+};
+
+snd.Source.prototype.getConnector = function() {
+    return this._gain;
+};
+
+/**
+ * 詳細はAudioUnitクラスの createStatus を参照してください。
+ * @return {snd.AudioUnit.Status} このオブジェクトのデフォルト設定値
+ */
+snd.Source.prototype.createStatus = function() {
+    return new snd.Source.Status();
+};
+
+
+/**
+ * @class snd.Sourceクラスの設定値を保持するステータスクラスです。<br/>
+ * 音源の種類、状態、ボリュームなどの情報を持ちます。
+ * @property {Boolean} isSource このオブジェクトが snd.Source を継承する音源であることを表す値
+ * @property {snd.status} status 状態
+ * @property {Float} volume ボリューム
+ * @property {String} className この設定値を使用しているオブジェクトのクラス名
+ */
+snd.Source.Status = function() {
+    snd.AudioUnit.Status.apply(this, arguments);
+    
+    this.status = snd.status.NONE;
+    this.volume = 1;
+    this.isSource = true;
+    
+    this.className = snd.Source.CLASS_NAME;
+};
+
+
+/**
+ * 新しくメディアタグを使用する音源を生成します。
+ * @class HTMLのメディア要素（Audioタグなど）を音源として使用する音源クラスです。<br/>
+ * 使用するタグに id が設定されている場合は、JSON.stringify メソッドを使用した際にその id が出力されるようになります。
+ * @param {String} id この音源のID
+ * @param {HTMLMediaElement} htmlMediaElement HTMLのメディアタグ要素
+ * @memberof snd
+ */
+snd.MediaElementAudioSource = function(id, htmlMediaElement) {
+    snd.Source.apply(this, arguments);
+    
+    this.id = id;
+
+    Object.defineProperties(this, {
+        element: {
+            get: function() {
+                return this._element;
+            },
+            set: function(elem) {
+                var _this = this;
+
+                this._source = snd.AUDIO_CONTEXT.createMediaElementSource(elem);
+                this._source.connect(this._gain);
+                this._element = elem;
+
+                if (this._element.id != null) {
+                    this._status.element = this._element.id;
+                }
+
+                this._element.onplay = function() {
+                    _this._status.status = snd.status.STARTED;
+                };
+                this._element.onpause = function() {
+                    _this._status.status = snd.status.PAUSED;
+                };
+                this._element.onended = function() {
+                    _this._status.status = snd.status.PAUSED;
+                };
+                this._element.oncanplay = function() {
+                    if (_this.status == snd.status.NONE) {
+                        _this._status.status = snd.status.READY;
+                    }
+                };
+            }
+        },
+        src: {
+            get: function() {
+                return this._element.src;
+            },
+            set: function(uri) {
+                this._element.src = uri;
+            }
+        }
+    });
+
+    if (htmlMediaElement != null) {
+        this.element = htmlMediaElement;
+    }
+};
+snd.MediaElementAudioSource.prototype = Object.create(snd.Source.prototype);
+snd.MediaElementAudioSource.prototype.constructor = snd.MediaElementAudioSource;
+
+snd.MediaElementAudioSource.CLASS_NAME = "snd.MediaElementAudioSource";
+
+snd.MediaElementAudioSource.prototype.createStatus = function() {
+    return new snd.MediaElementAudioSource.Status();
+};
+
+
+snd.MediaElementAudioSource.Status = function() {
+    snd.Source.Status.apply(this, arguments);
+    
+    this.className = snd.MediaElementAudioSource.CLASS_NAME;
+    this.status = snd.status.NONE;
+    this.element = "";
+};
+snd.MediaElementAudioSource.Status.prototype = Object.create(snd.Source.Status.prototype);
+snd.MediaElementAudioSource.Status.prototype.constructor = snd.MediaElementAudioSource.Status;
+
+
+
+
+
+
+
+
+
+
+/**
+ * コンストラクタは使用せず、snd.MASTERを使用してください。
+ * @class ミキサークラスです。<br/>
+ * snd.initメソッドでsnd.MASTERにインスタンスが生成されます。
+ */
+snd.AudioMaster = function() {
+    this.unitList = {};
+    this._gain = snd.AUDIO_CONTEXT.createGain();
+    this._gain.channelCount = snd.MAX_CHANNEL_COUNT;
+    this._gain.connect(snd.AUDIO_CONTEXT.destination);
+    this.id = snd.AudioMaster.ID;
+};
+
+snd.AudioMaster.ID = "snd.MASTER";
+
+/**
+ * 新しくaudioUnitで指定されたユニットを接続します。
+ * @param {type} key 接続するユニットを表すキー値
+ * @param {snd.AudioUnit} audioUnit 接続するユニット
+ */
+snd.AudioMaster.prototype.connectAudioUnit = function(key, audioUnit) {
+    if (key == null && audioUnit.id == null) {
+        throw "key == null && audioUnit.id == null";
+    }
+    
+    if (key == null) {
+        if (this.unitList[audioUnit.id] == null) {
+            this.unitList[audioUnit.id] = audioUnit;
+            audioUnit.connect(this._gain, snd.AudioMaster.ID);
+        }
+    } else {
+        this.unitList[key] = audioUnit;
+        audioUnit.connect(this._gain, snd.AudioMaster.ID);
+    }
+};
+
+/**
+ * 接続されたユニットを切断します。
+ * @param {String} key 切断するユニット
+ */
+snd.AudioMaster.prototype.disconnectAudioUnit = function(key) {
+    var audioUnit = this.unitList[key];
+    audioUnit.getConnector().disconnect(this._gain);
+    delete this.unitList[key];
+};
+
+snd.AudioMaster.prototype.getConnector = function() {
+    return this._gain;
+};
+
+
+snd._AUDIO_CONTEXT = null;
+snd._MASTER = null;
+
+/**
+ * snd.jsを初期化します。
+ * @memberOf snd
+ */
+snd.init = function () {
+
+    if (snd._AUDIO_CONTEXT == null) {
+        // Create AudioContext
+        if ('AudioContext' in window) {
+            // firefox
+            snd._AUDIO_CONTEXT = new AudioContext();
+        } else if ('webkitAudioContext' in window) {
+            // crome etc
+            snd._AUDIO_CONTEXT = new webkitAudioContext();
+        }
+        snd._AUDIO_CONTEXT.destination.channelCount = snd._AUDIO_CONTEXT.destination.maxChannelCount;
+    }
+
+    Object.defineProperties(snd, {
+        MAX_CHANNEL_COUNT: {
+            writable: false,
+            value: snd._AUDIO_CONTEXT.destination.maxChannelCount
+        },
+        status: {
+            value: (function () {
+                var ret = {};
+                Object.defineProperties(ret, {
+                    NONE: {
+                        value: "none",
+                        writable: false
+                    },
+                    READY: {
+                        value: "ready",
+                        writable: false
+                    },
+                    STARTED: {
+                        value: "started",
+                        writable: false
+                    },
+                    PAUSED: {
+                        value: "paused",
+                        writable: false
+                    },
+                    STOPPED: {
+                        value: "ended",
+                        writable: false
+                    }
+                });
+                return ret;
+            })(),
+            writable: false
+        },
+        /* Objects */
+        AUDIO_CONTEXT: {
+            get: function () {
+                return snd._AUDIO_CONTEXT;
+            }
+        },
+        MASTER: {
+            get: function () {
+                return snd._MASTER;
+            }
+        }
+    });
+
+    snd._MASTER = new snd.AudioMaster();
+    snd.SOUND_ENVIRONMENT = new snd.SoundEnvironment();
+    
+};
+
+snd.three = {version: 0.1, beta: true};
+
+
+
+snd.PosDir = function () {
+    this._pos = {x: 0, y: 0, z: 0};
+    this._dir = {x: 0, y: 0, z: 0};
+    this._up = {x: 0, y: 0, z: 0};
+
+    Object.defineProperties(this, {
+        pos: {
+            get: function () {
+                var _this = this;
+                var ret = {};
+                Object.defineProperties(ret, {
+                    x: {
+                        get: function () {
+                            return _this._pos.x;
+                        },
+                        set: function (val) {
+                            _this._pos.x = val;
+                        }
+                    },
+                    y: {
+                        get: function () {
+                            return _this._pos.y;
+                        },
+                        set: function (val) {
+                            _this._pos.y = val;
+                        }
+                    },
+                    z: {
+                        get: function () {
+                            return _this._pos.z;
+                        },
+                        set: function (val) {
+                            _this._pos.z = val;
+                        }
+                    }
+                });
+                return ret;
+            }
+        },
+        dir: {
+            get: function () {
+                var _this = this;
+                var ret = {};
+                Object.defineProperties(ret, {
+                    x: {
+                        get: function () {
+                            return _this._dir.x;
+                        },
+                        set: function (val) {
+                            _this._dir.x = val;
+                        }
+                    },
+                    y: {
+                        get: function () {
+                            return _this._dir.y;
+                        },
+                        set: function (val) {
+                            _this._dir.y = val;
+                        }
+                    },
+                    z: {
+                        get: function () {
+                            return _this._dir.z;
+                        },
+                        set: function (val) {
+                            _this._dir.z = val;
+                        }
+                    }
+                });
+                return ret;
+            }
+        },
+        up: {
+            get: function () {
+                var _this = this;
+                var ret = {};
+                Object.defineProperties(ret, {
+                    x: {
+                        get: function () {
+                            return _this._up.x;
+                        },
+                        set: function (val) {
+                            _this._up.x = val;
+                        }
+                    },
+                    y: {
+                        get: function () {
+                            return _this._up.y;
+                        },
+                        set: function (val) {
+                            _this._up.y = val;
+                        }
+                    },
+                    z: {
+                        get: function () {
+                            return _this._up.z;
+                        },
+                        set: function (val) {
+                            _this._up.z = val;
+                        }
+                    }
+                });
+                return ret;
+            }
+        }
+    });
+};
+
+snd.PosDir.prototype.setPosition = function (x, y, z) {
+    this.pos.x = x;
+    this.pos.y = y;
+    this.pos.z = z;
+};
+
+snd.PosDir.prototype.setOrientation = function (x, y, z, ux, uy, uz) {
+    this.dir.x = x;
+    this.dir.y = y;
+    this.dir.z = z;
+    this.up.x = ux;
+    this.up.y = uy;
+    this.up.z = uz;
+};
+
+/**
+ * 新しいインスタンスを作ります。
+ * @class リスナを表すクラスです。<br/>
+ * AudioContext#Listenerをラップしています。<br/>
+ * <a href="#setListener">setListener</a>メソッドを呼び出すまでは実際の出力へは反映されませんが、setPositionなどで設定された位置情報は保持されます。<br/>
+ * （setListenerメソッドでListenerをセットした時点でListenerにこのオブジェクトの姿勢情報が反映されるようになります。）<br/>
+ * @param {Listener} listener AudioContext.Listener (nullでもよい)
+ */
+snd.Listener = function(listener) {
+    snd.PosDir.apply(this, arguments);
+    this.listener = listener;
+
+    if (listener != null) {
+        this.listener.setOrientation(this.dir.x, this.dir.y, this.dir.z, this.up.x, this.up.y, this.up.z);
+    }
+};
+snd.Listener.prototype = Object.create(snd.PosDir.prototype);
+snd.Listener.prototype.constructor = snd.Listener;
+
+/**
+ * listenerを設定します。<br/>
+ * このメソッドで設定されるまで、WebAudioAPIのlistenerには反映されません。
+ * @param {Listener} AudioContext.Listener
+ */
+snd.Listener.prototype.setListener = function(listener) {
+    this.listener = listener;
+    this.setPosition(this.pos.x, this.pos.y, this.pos.z);
+    this.setOrientation(this.dir.x, this.dir.y, this.dir.z, this.up.x, this.up.y, this.up.z);
+};
+
+/**
+ * このオブジェクトに設定されているlistenerをnullへリセットします。
+ */
+snd.Listener.prototype.resetListener = function() {
+    this.setListener(null);
+};
+
+/**
+ * リスナの位置を設定します。
+ * @param {float} x X軸の値
+ * @param {float} y Y軸の値
+ * @param {float} z Z軸の値
+ */
+snd.Listener.prototype.setPosition = function(x, y, z) {
+    snd.PosDir.prototype.setPosition.call(this, x, y, z);
+    if (this.listener != null) {
+        this.listener.setPosition(
+                snd.SOUND_ENVIRONMENT.unit * this.pos.x,
+                snd.SOUND_ENVIRONMENT.unit * this.pos.y,
+                snd.SOUND_ENVIRONMENT.unit * this.pos.z);
+    }
+};
+
+/**
+ * リスナの向きを設定します。
+ * @param {flaot} x 正面方向ベクトルのX値
+ * @param {flaot} y 正面方向ベクトルのY値
+ * @param {flaot} z 正面方向ベクトルのZ値
+ * @param {flaot} ux 上方向ベクトルのX値
+ * @param {flaot} uy 上方向ベクトルのY値
+ * @param {flaot} uz 上方向ベクトルのZ値
+ */
+snd.Listener.prototype.setOrientation = function(x, y, z, ux, uy, uz) {
+    snd.PosDir.prototype.setOrientation.call(this, x, y, z, ux, uy, uz);
+    if (this.listener != null) {
+        this.listener.setOrientation(this.dir.x, this.dir.y, this.dir.z, this.up.x, this.up.y, this.up.z);
+    }
+};
+
+
+
+/**
+ * @class
+ */
+snd.SoundEnvironment = function() {
+    this.now = 0;
+    this.listener = snd.AUDIO_CONTEXT.listener;
+    this.listeners = {};
+    this.soundNodes = {};
+    this.unit = 0.1;
+    
+    this.cameras = {}; // {id: {camera: three.js.Camera, listener: snd.js.listener}}
+    this.attaches = {}; // {id: {object: three.js.Object3D, sources: snd.js.SoundNode[]}}
+    this.linkMap = {};
+};
+
+/**
+ * バッファに姿勢情報を記録する最大数のデフォルト値。<br/>
+ * 30フレーム/秒として60秒分
+ * @type Integer
+ */
+snd.SoundEnvironment.DEFAULT_BUFFER_MAX = 1800;
+
+snd.SoundEnvironment.prototype.addListener = function(id, listener) {
+    this.listeners[id] = new snd.PosDirTime(listener, 1);
+};
+
+snd.SoundEnvironment.prototype.removeListener = function(id) {
+    if (this.soundNodes[id] != null) {
+        delete this.soundNodes[id];
+    }
+};
+
+snd.SoundEnvironment.prototype.addSoundNode = function(id, soundNode) {
+    this.soundNodes[id] = new snd.PosDirTime(soundNode);
+};
+
+snd.SoundEnvironment.prototype.removeSoundNode = function(id) {
+    if (this.soundNodes[id] != null) {
+        delete this.soundNodes[id];
+    }
+};
+
+snd.SoundEnvironment.prototype.update = function(time) {
+    if (this.now > time) {
+        throw new snd.SoundEnvironment.UpdateError(this, "time < this.now (time: " + time  + ", this.now: " + this.now);
+    }
+    
+    for (var key in this.listeners) {
+        this.listeners[key].update(time);
+    }
+    for (var key in this.soundNodes) {
+        this.soundNodes[key].update(time);
+    }
+};
+
+/**
+ * @class フレーム更新時にエラーが発生した時にthrowするオブジェクト
+ */
+snd.SoundEnvironment.UpdateError = function(_this, message) {
+    this._this = _this;
+    this.message = message;
+};
+
+/**
+ * @class snd.PosDirに時系列情報を付加したクラスです。<br/>
+ * updateが呼ばれるたびにバッファに姿勢情報を追記します。<br/>
+ * バッファに記録する個数はbufferMaxで指定された数が最大で、それ以上になると過去の情報から順に消されます。<br/>
+ * bufferMaxのデフォルト値はsnd.SoundEnvironment.DEFAULT_BUFFER_MAXで定義されています。
+ */
+snd.PosDirTime = function(data, bufferMax) {
+    this.data = data;
+    this.history = []; // [{time: milli second, posture: posture}]
+    this.bufferMax = bufferMax;
+};
+
+snd.PosDirTime.prototype.update = function(time) {
+    if (this.history.length == 0) {
+        this.history.push({time: 0, posture: Object.create(this.data)});
+    }
+    if (this.history.length > this.bufferMax) {
+        this.history.splice(0, 1);
+    }
+    this.history.push({time:time, posture:Object.create(this.data)});
+};
+
+snd.PosDirTime.prototype.getPosture = function(time) {
+    var res = this.search(time);
+    if (res == null) {
+        return null;
+    } else if (res.left == res.right) {
+        return this.history[res.left];
+    }
+    
+    var left = this.history[left];
+    var right = this.history[right];
+    var ratio = (time - left.time) / (right.time - left.time);
+    
+    return snd.PosDir.interpolation(left, right, ratio);
+};
+
+snd.PosDirTime.prototype.search = function(time) {
+    if (this.history.length <= 0) {
+        return null;
+    } else if (this.history.length == 1) {
+        return {left: 0, right: 0};
+    } else if (this.history[this.history.length - 1].time < time) {
+        return {left: this.history.length - 1, right: this.history.legnth - 1};
+    } else if (this.history[0].time > time) {
+        return {left: 0, right: 0};
+    }
+    
+    var left = 0, right = this.history.length - 1;
+    var mid = Math.floor(right / 2);
+    
+    while (true) {
+        mid = Math.floor((time - this.history[left].time) * (right - left) / (this.history[right].time - this.history[left].time)) + left;
+        if (this.history[mid].time < time) {
+            if (this.history[mid + 1] > time) {
+                return {left: mid, right: mid + 1};
+            }
+            left = mid + 1;
+        } else if (this.history[mid].time > time) {
+            if (this.history[mid - 1].time < time) {
+                return {left: mid - 1, right: mid};
+            }
+            right = mid - 1;
+        } else {
+            return {left: mid, right: mid};
+        }
+    }
+};
+
+
+
+ /**
+  * @class PannerNodeを使用するパンニングに対応したユニットです。
+  * @param {String} id このユニットを表す固有のID
+  */
+snd.SoundNode = function(id) {
+    snd.AudioUnit.apply(this, arguments);
+    snd.PosDir.apply(this, arguments);
+    
+    this.gain = snd.AUDIO_CONTEXT.createGain();
+    this.pannerNode = snd.AUDIO_CONTEXT.createPanner();
+    
+    this.gain.connect(this.pannerNode);
+};
+snd.SoundNode.prototype = Object.create(snd.AudioUnit.prototype);
+snd.SoundNode.prototype.constructor = snd.SoundNode;
+
+/**
+ * @see snd.AudioUnit#connect
+ */
+snd.SoundNode.prototype.connect = function(connectTo, chOut, chIn, id) {
+    snd.AudioUnit.prototype.connect.apply(this, arguments);
+    
+    if (connectTo.isAudioUnit) {
+        this.pannerNode.connect(connectTo.getConnector());
+    } else {
+        this.pannerNode.connect(connectTo);
+    }
+};
+
+/**
+ * @see snd.AudioUnit#disconnect
+ */
+snd.SoundNode.prototype.disconnect = function(disconnectFrom) {
+    snd.AudioUnit.prototype.disconnect.apply(this, arguments);
+    
+    if (disconnectFrom.isAudioUnit) {
+        this.pannerNode.disconnect(disconnectFrom.getConnector());
+    } else {
+        this.pannerNode.disconnect(disconnectFrom);
+    }
+};
+
+/**
+ * @see snd.AudioUnit#getConnector
+ */
+snd.SoundNode.prototype.getConnector = function() {
+    return this.gain;
+};
+
+
+
+/**
+ * この音源の位置を設定します。
+ * @param {type} x 設定する位置のX値
+ * @param {type} y 設定する位置のY値
+ * @param {type} z 設定する位置のZ値
+ */
+ snd.SoundNode.prototype.setPosition = function(x, y, z) {
+    snd.PosDir.prototype.setPosition.call(this, x, y, z);
+    this.pannerNode.setPosition(
+            snd.SOUND_ENVIRONMENT.unit * this.pos.x,
+            snd.SOUND_ENVIRONMENT.unit * this.pos.y,
+            snd.SOUND_ENVIRONMENT.unit * this.pos.z);
+};
+
+/**
+ * この音源の向きを設定します
+ * @param {Number} x 正面方向ベクトルのX値
+ * @param {Number} y 正面方向ベクトルのY値
+ * @param {Number} z 正面方向ベクトルのZ値
+ */
+ snd.SoundNode.prototype.setDir = function(x, y, z) {
+    snd.PosDir.prototype.setDir.call(this, x, y, z);
+    this.pannerNode.setOrientation(this.dir.x, this.dir.y, this.dir.z);
+};
+
+/**
+ * この音源の上向きベクトルを設定します。
+ * @param {Number} x 上向きベクトルのX値
+ * @param {Number} y 上向きベクトルのY値
+ * @param {Number} z 上向きベクトルのZ値
+ */
+ snd.SoundNode.prototype.setUp = function(x, y, z) {
+    snd.PosDir.prototype.setUp.call(this, x, y, z);
+};
+
+/**
+ * この音源の向きを設定します
+ * @param {Number} dx 正面方向ベクトルのX値
+ * @param {Number} dy 正面方向ベクトルのY値
+ * @param {Number} dz 正面方向ベクトルのZ値
+ * @param {Number} ux 上方向ベクトルのX値
+ * @param {Number} uy 上方向ベクトルのY値
+ * @param {Number} uz 上方向ベクトルのZ値
+ */
+snd.SoundNode.prototype.setOrientation = function(dx, dy, dz, ux, uy, uz) {
+    snd.PosDir.prototype.setOrientation.call(this, dx, dy, dz, ux, uy, uz);
+    this.pannerNode.setOrientation(this.dir.x, this.dir.y, this.dir.z);
+};
+
+
+
+
+/**
+ * 新しいインスタンスを作成します。<br/>
+ * sourceで渡すオブジェクトは、snd.BufferSoundSourceクラスである必要があります。
+ * @param {String} id この音源オブジェクトのID
+ * @param {snd.BufferSource} source 使用する音源
+ * @class BufferSourceクラスを使用するSoundNodeクラスです。<br/>
+ * startやstopなどの各種メソッドを移譲しているため、音源とエフェクトの区別をつけないまま操作が可能です。<br/>
+ * MediaElementAudioSource/Nodeと比較して、一時停止ができないなどの不便さがありますが、
+ * なめらかにループがつながるなどの利点があります。<br/>
+ * 用途によって使い分けてください。
+ */
+snd.BufferSoundNode = function(id, source) {
+    snd.SoundNode.apply(this, arguments);
+    
+    if (source == null) {
+        this.source = new snd.BufferSource(id + "_src");
+    } else {
+        this.source = source;
+    }
+    this.source.connect(this);
+};
+snd.BufferSoundNode.prototype = Object.create(snd.SoundNode.prototype);
+snd.BufferSoundNode.prototype.constructor = snd.BufferSoundNode;
+
+/**
+ * オーディオバッファを設定するメソッドです。
+ * @param {AudioBuffer} audioBuffer
+ */
+snd.BufferSoundNode.prototype.setAudioBuffer = function(audioBuffer) {
+    this.source.setAudioBuffer(audioBuffer);
+};
+
+
+
+
+
+
+
+snd.three.update = function(mainCamera, time) {
+    if (snd.SOUND_ENVIRONMENT.cameras[mainCamera.id] == null) {
+        console.log("mainCamera(" + mainCamera.toString() + ") is not added.");
+        return;
+    }
+    if (snd.SOUND_ENVIRONMENT.cameras[mainCamera.id].listener.listener == null) {
+        for (var id in snd.SOUND_ENVIRONMENT.cameras) {
+            snd.SOUND_ENVIRONMENT.cameras[id].listener.resetListener();
+        }
+        snd.SOUND_ENVIRONMENT.cameras[mainCamera.id].listener.setListener(snd.AUDIO_CONTEXT.listener);
+    }
+    
+    // update listener posture
+    for (var id in snd.SOUND_ENVIRONMENT.cameras) {
+        var cam = snd.SOUND_ENVIRONMENT.cameras[id].camera;
+        var listener = snd.SOUND_ENVIRONMENT.cameras[id].listener;
+        snd.three.link(cam, listener);
+    }
+
+    // update source posture
+    for (var id in snd.SOUND_ENVIRONMENT.attaches) {
+        var obj = snd.SOUND_ENVIRONMENT.attaches[id].object;
+        for (var i = 0; i < snd.SOUND_ENVIRONMENT.attaches[id].sources.length; i++) {
+            var src = snd.SOUND_ENVIRONMENT.attaches[id].sources[i];
+            snd.three.link(obj, src);
+        }
+    }
+};
+
+snd.three.addCamera = function(camera) {
+    var id = camera.id;
+    if (snd.SOUND_ENVIRONMENT.cameras[id] != null) {
+        console.warn("snd.SOUND_ENVIRONMENT already has camera(" + camera.toString() + ").");
+        return;
+    }
+
+    var listener = new snd.Listener(null);
+
+    snd.SOUND_ENVIRONMENT.cameras[id] = {camera: camera, listener: listener};
+    snd.SOUND_ENVIRONMENT.addListener(listener);
+};
+
+snd.three.removeCamera = function(camera) {
+    if (snd.SOUND_ENVIRONMENT.cameras[camera.id] != null) {
+        snd.SOUND_ENVIRONMENT.removeListener(snd.SOUND_ENVIRONMENT.cameras[camera.id].listener);
+        delete snd.SOUND_ENVIRONMENT.cameras[camera.id];
+    }
+};
+
+snd.three.attach = function(object, source) {
+    var id = object.id;
+    if (snd.SOUND_ENVIRONMENT.attaches[id] == null) {
+        snd.SOUND_ENVIRONMENT.attaches[id] = {object: object, sources: []};
+    }
+    snd.SOUND_ENVIRONMENT.attaches[id].sources.push(source);
+    snd.SOUND_ENVIRONMENT.linkMap[source.id] = id;
+};
+
+snd.three.detach = function(source) {
+    var srcID = source.id;
+    if (snd.SOUND_ENVIRONMENT.linkMap[srcID] != null) {
+        var objID = snd.SOUND_ENVIRONMENT.linkMap[srcID];
+        var i = snd.SOUND_ENVIRONMENT.attaches[objID].sources.indexOf(source);
+        if (i >= 0) {
+            snd.SOUND_ENVIRONMENT.attaches[objID].sources.splice(i, 1);
+        }
+        delete snd.SOUND_ENVIRONMENT.linkMap[srcID];
+    }
+};
+
+snd.three.link = function(object3D, posdir) {
+    if (!isNaN(object3D.position.x) && !isNaN(object3D.position.y) && !isNaN(object3D.position.z)
+            && !isNaN(object3D.quaternion.x) && !isNaN(object3D.quaternion.y) && !isNaN(object3D.quaternion.z) && !isNaN(object3D.quaternion.w)) {
+        var objMatrix = new THREE.Matrix4();
+        objMatrix.copy(object3D.matrixWorld);
+        
+        var rotMatrix = new THREE.Matrix4();
+        rotMatrix.copy(objMatrix);
+        rotMatrix.elements[12] = 0; rotMatrix.elements[13] = 0; rotMatrix.elements[14] = 0;
+        
+        var objPos = new THREE.Vector3(
+                objMatrix.elements[12],
+                objMatrix.elements[13],
+                objMatrix.elements[14]);
+        var objDir = new THREE.Vector3(
+                -objMatrix.elements[8],
+                -objMatrix.elements[9],
+                -objMatrix.elements[10]);
+        
+        var objUp = new THREE.Vector3();
+        objUp.copy(object3D.up);
+        objUp.applyMatrix4(rotMatrix);
+        //objUp.negate();
+    
+        posdir.setPosition(objPos.x, objPos.y, objPos.z);
+        posdir.setOrientation(objDir.x, objDir.y, objDir.z, objUp.x, objUp.y, objUp.z);
+    }
+};
+
+THREE.snd = snd;
+
+} )();
 !function( window, $, undefined ) {
 
 var core_version = "2.1.0",
@@ -34173,7 +35285,7 @@ jThree.fn.extend({
 		} else if ( typeof selector === "string" ) {
 
 			if ( /<.+?>/.test( selector ) ) {
-				selector = parseGOML( selector ).children();
+				selector = parseGOML( selector );
 			} else if ( context ) {
 				selector = rootObj.find( context ).find( selector );
 			} else {
@@ -34665,25 +35777,21 @@ var parseGOML = ( function() {
 
 		$.each( tmp_list.SPRITE, function() {
 
-			obj = new THREE.Sprite( new THREE.Material );
-			obj.material.useScreenCoordinates = false;
-			obj.material.depthTest = true;
-			obj.material.sizeAttenuation = true;
-			obj.material.scaleByViewport = false;
-			setObj( this, obj );
+			setObj( this, new THREE.Sprite( new THREE.Material ) );
 
 		} );
 
 		Array.prototype.push.apply( obj3D, tmp_list.SPRITE );
 
-		$.each( tmp_list.MESH.concat( tmp_list.PTS ), function() {
+		$.each( tmp_list.MESH/*.concat( tmp_list.PTS )*/, function() {
 
-			setObj( this, new THREE[ this.tagName === "MESH" ? "Mesh": "ParticleSystem" ]( new THREE.Geometry, new THREE.Material ) );
+			//setObj( this, new THREE[ this.tagName === "MESH" ? "Mesh": "ParticleSystem" ]( new THREE.Geometry, new THREE.Material ) );
+			setObj( this, new THREE.Mesh( new THREE.Geometry, new THREE.Material ) );
 
 		} );
 
 		Array.prototype.push.apply( obj3D, tmp_list.MESH );
-		Array.prototype.push.apply( obj3D, tmp_list.PTS );
+		//Array.prototype.push.apply( obj3D, tmp_list.PTS );
 
 		$.each( obj3D, function() {
 
@@ -34882,6 +35990,8 @@ function getArr( string ) {
 
 		} );
 
+	} else if ( string === 0 ) {
+		return [ 0 ];
 	} else {
 		return [];
 	}
@@ -34890,6 +36000,10 @@ function getArr( string ) {
 
 function urlToExtension( url ) {
 	return !/^\.[^\/^\.]/.test( url ) && url.split( "." ).pop().split( "?" )[ 0 ].toLowerCase();
+}
+
+function getHtmlObj( selector ) {
+	return /^html /.test( selector ) ? $( selector ) : importFrame.contents().find( selector );
 }
 
 var prop = {
@@ -34955,7 +36069,7 @@ var prop = {
 
 		html: function( selector ) {
 
-			if ( importStates !== "success" ) {
+			if ( !/^html /.test( selector ) && importStates !== "success" ) {
 
 				var that = this;
 
@@ -34969,7 +36083,7 @@ var prop = {
 
 			}
 
-			var target = importFrame.contents().find( selector )[ 0 ];
+			var target = getHtmlObj( selector )[ 0 ];
 			var elem = getObj( this );
 
 			elem._htmlReset && elem._htmlReset();
@@ -35011,7 +36125,7 @@ var prop = {
 
 		video: function( selector ) {
 
-			if ( importStates !== "success" ) {
+			if ( !/^html /.test( selector ) && importStates !== "success" ) {
 
 				var that = this;
 
@@ -35025,7 +36139,7 @@ var prop = {
 
 			}
 
-			var target = importFrame.contents().find( selector );
+			var target = getHtmlObj( selector );
 			var video = target[ 0 ];
 
 			var elem = getObj( this );
@@ -35065,7 +36179,7 @@ var prop = {
 
 		canvas: function( selector ) {
 
-			if ( importStates !== "success" ) {
+			if ( !/^html /.test( selector ) && importStates !== "success" ) {
 
 				var that = this;
 
@@ -35092,12 +36206,84 @@ var prop = {
 				elem.needsUpdate = true;
 			};
 
-			elem.image = importFrame.contents().find( selector )[ 0 ];
+			elem.image = getHtmlObj( selector )[ 0 ];
 			elem.needsUpdate = true;
 			jThree.update( elem._canvasUpdate, this.getAttribute( "animation" ) === "true" );
 			$.event.trigger( "load", undefined, this );
 
 		},
+
+		audio: function(){
+
+			var ID = 0;
+
+			return function( selector ) {
+
+				if ( !window.AudioContext && !window.webkitAudioContext ) return;
+
+				if ( !/^html /.test( selector ) && importStates !== "success" ) {
+
+					var that = this;
+
+					importFrame.one( "load", function() {
+
+						prop.audio.call( that, selector );
+						that = selector = null;
+
+					} );
+					return;
+
+				}
+
+				var audios = getHtmlObj( selector );
+				var obj = getObj( this );
+				var camera = getReferent( jThree( "rdr" ).attr( "camera" ) || "camera" );
+
+				!THREE.snd._AUDIO_CONTEXT && THREE.snd.init();
+
+
+
+				obj._sndReset && obj._sndReset();
+
+				var nodes = [];
+
+				obj._sndReset = function() {
+
+					nodes.forEach( function( node ) {
+						THREE.snd.MASTER.disconnectAudioUnit( node.id );
+						THREE.snd.three.detach( node );
+					} );
+
+					nodes = null;
+
+				};
+
+				if ( !THREE.snd.SOUND_ENVIRONMENT.cameras[ camera.id ] ) {
+
+					!function() {
+						var _camera = camera;
+						THREE.snd.three.addCamera( _camera );
+					    jThree.update( function() {
+					        THREE.snd.three.update( _camera );
+					    } );
+				    }();
+
+				}
+
+				audios.each( function() {
+
+					var id = ID++;
+					var sound_node = new THREE.snd.BufferSoundNode( id, new THREE.snd.MediaElementAudioSource( id + .5, this ) );
+
+					nodes.push( sound_node );
+					THREE.snd.MASTER.connectAudioUnit( sound_node.id, sound_node );
+					THREE.snd.three.attach( obj, sound_node );
+
+				} );
+
+			};
+
+		}(),
 
 		animation: function( bool ) {
 
@@ -35113,7 +36299,7 @@ var prop = {
 			getObj( this ).__invisible = !selector || Array.isArray( selector ) ? selector : [ selector ];
 		},
 
-		vposition: function( fn ) {
+		/*vposition: function( fn ) {
 			var that = this;
 
 			fn = getFn( fn );
@@ -35122,7 +36308,7 @@ var prop = {
 			} );
 
 			that = null;
-		},
+		},*/
 
 		geo: ( function() {
 
@@ -35256,6 +36442,14 @@ var prop = {
 
 						mesh.material.dispose();
 						mesh.material = getObj( this ).clone();
+
+						if ( mesh instanceof THREE.Sprite ) {
+							mesh.material.useScreenCoordinates = false;
+							mesh.material.depthTest = true;
+							mesh.material.sizeAttenuation = true;
+							mesh.material.scaleByViewport = false;
+						}
+
 						$.each( mesh.material, function() {
 							if ( this instanceof THREE.Texture ) {
 								this.needsUpdate = true;
@@ -35294,6 +36488,14 @@ var prop = {
 					var mesh = getObj( this );
 					mesh.material.dispose();
 					mesh.material = getObj( mtlDom[ 0 ] ).clone();
+
+					if ( mesh instanceof THREE.Sprite ) {
+						mesh.material.useScreenCoordinates = false;
+						mesh.material.depthTest = true;
+						mesh.material.sizeAttenuation = true;
+						mesh.material.scaleByViewport = false;
+					}
+
 					$.each( mesh.material, function() {
 						if ( this instanceof THREE.Texture ) {
 							this.needsUpdate = true;
@@ -35692,7 +36894,7 @@ function hasRenderObj( render ) {
 	return render.__renderable = render.__camera && render.__camera.userData.scene;
 }
 
-jThree.fn.attr = function( name, val ) {
+jThree.fn.attr = jThree.fn.prop = function( name, val ) {
 
 	if ( typeof name === "string" ) {
 
@@ -35745,7 +36947,7 @@ jThree.styleHooks = {};
 
 function cssMethod( key, val_type/*true:number, false:arr*/ ) {
 	return function( x ) {
-		return this.css( key, Array.isArray( x ) || x === undefined || val_type ? x : arguments.length > 1 ? arguments : /^qua/.test( key ) ? [ x, x, x, x ] : [ x, x, x ] );
+		return x && ( ( x instanceof jThree ) || x.nodeType ) ? this.css( key, x ) : this.css( key, Array.isArray( x ) || x === undefined || val_type ? x : arguments.length > 1 ? arguments : /^qua/.test( key ) ? [ x, x, x, x ] : [ x, x, x ] );
 	};
 }
 
@@ -35939,6 +37141,23 @@ $.each( style_menu, function( i, menu ) {
 } );
 
 $.extend( jThree.styleHooks, {
+	axis: {
+		get: function( obj ) {
+			return !obj.userData.__axis ? 0 : obj.userData.__axis.geometry.vertices[ 1 ].x;
+		},
+		set: function( obj, val ) {
+			var axis = obj.userData.__axis;
+			if ( axis ) {
+				obj.remove( axis );
+			}
+
+			if ( val ) {
+				axis = new THREE.AxisHelper( val );
+				obj.userData.__axis = axis;
+				obj.add( axis );
+			}
+		}
+	},
 	display: {
 		get: function( obj ) {
 			return obj.userData.__display === false ? false : true;
@@ -35992,7 +37211,40 @@ $.extend( jThree.styleHooks, {
 	}
 } );
 
+function objToLocal( obj, name, val ) {
+
+	if ( val && ( ( val instanceof jThree ) || val.nodeType ) ) {
+
+		var mesh = getObj( val instanceof jThree ? val[ 0 ] : val );
+
+		if ( /(position|lookAt)/.test( name ) ) {
+
+			var vec = new THREE.Vector3;
+			val = styleAdmin( mesh, "position" );
+
+			if ( /(X|Y|Z)/.test( name ) ) {
+				var axis = name.slice( -1 ).toLowerCase();
+				vec[ axis ] = val[ axis ];
+				var position = obj.parent.worldToLocal( mesh.parent.localToWorld( vec ) );
+				val = position[ axis ];
+			} else {
+				vec.set( val[ 0 ], val[ 1 ], val[ 2 ] );
+				var position = obj.parent.worldToLocal( mesh.parent.localToWorld( vec ) );
+				val = [ position.x, position.y, position.z ];
+			}
+
+		} else {
+			val = styleAdmin( mesh, name );
+		}
+
+	}
+
+	return val;
+}
+
 function styleAdmin( obj, name, val ) {
+
+	val = objToLocal( obj, name, val );
 
 	if ( !jThree.styleHooks[ name ] && /^mtl/.test( name ) ) {
 
@@ -36466,6 +37718,7 @@ var animate_id = 0,
 			$.each( param, function( key, value ) {
 
 				tmp = styleAdmin( obj, key );
+				value = objToLocal( obj, key, value );
 
 				if ( tmp.color ) {
 
